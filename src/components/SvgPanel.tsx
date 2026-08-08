@@ -24,7 +24,7 @@ export function SvgPanel({ svgText, onSvgTextChange, error }: SvgPanelProps) {
   };
 
   return (
-    <Card className="flex flex-col">
+    <Card className="flex flex-col lg:self-start">
       <CardHeader>
         <CardTitle>Path</CardTitle>
         <CardDescription>
@@ -37,7 +37,7 @@ export function SvgPanel({ svgText, onSvgTextChange, error }: SvgPanelProps) {
           value={svgText}
           onChange={(e) => onSvgTextChange(e.target.value)}
           placeholder='<svg>…</svg> or "M 60 300 C 130 90 …"'
-          className="min-h-40 flex-1 resize-none font-mono text-xs leading-relaxed"
+          className="h-44 resize-none font-mono text-xs leading-relaxed"
         />
         {error ? (
           <p className="text-xs text-destructive">{error}</p>

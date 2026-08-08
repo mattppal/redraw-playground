@@ -28,9 +28,7 @@ fn vs_main(@builtin(vertex_index) vi: u32) -> @builtin(position) vec4f {
   return vec4f(verts[vi], 0.0, 1.0);
 }
 
-@fragment
-fn fs_main(@builtin(position) fragCoord: vec4f) -> @location(0) vec4f {
-  let p = fragCoord.xy;
+fn shade(p: vec2f) -> vec4f {
   let n = uni.pointCount;
 
   var minDist = 1e9;
@@ -86,6 +84,11 @@ fn fs_main(@builtin(position) fragCoord: vec4f) -> @location(0) vec4f {
 
   let outRgb = mix(bg, rgb, alpha) + rgb * glow;
   return vec4f(outRgb, 1.0);
+}
+
+@fragment
+fn fs_main(@builtin(position) fragCoord: vec4f) -> @location(0) vec4f {
+  return shade(fragCoord.xy);
 }
 `;
 

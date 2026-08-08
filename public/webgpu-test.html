@@ -1,0 +1,81 @@
+<!doctype html>
+<!-- Standalone WebGPU sanity check (no React/TypeGPU): /webgpu-test.html -->
+<html>
+  <head>
+    <meta charset="utf-8" />
+    <title>WebGPU sanity test</title>
+    <style>
+      body { background: #111; color: #eee; font: 13px monospace; }
+      canvas { width: 320px; height: 180px; border: 1px solid #555; display: block; margin: 12px 0; }
+    </style>
+  </head>
+  <body>
+    <div id="log">starting…</div>
+    <canvas id="c" width="320" height="180"></canvas>
+    <script type="module">
+      const log = (m) => {
+        document.getElementById('log').textContent += '\n' + m;
+        console.log('[webgpu-test]', m);
+      };
+      document.getElementById('log').textContent = '';
+      try {
+        if (!navigator.gpu) throw new Error('navigator.gpu missing');
+        const adapter = await navigator.gpu.requestAdapter();
+        if (!adapter) throw new Error('no adapter');
+        const info = adapter.info;
+        log(`adapter: vendor=${info?.vendor} arch=${info?.architecture}`);
+        const device = await adapter.requestDevice();
+        device.addEventListener('uncapturederror', (e) => log('UNCAPTURED: ' + e.error.message));
+        const canvas = document.getElementById('c');
+        const ctx = canvas.getContext('webgpu');
+        const format = navigator.gpu.getPreferredCanvasFormat();
+        ctx.configure({ device, format, alphaMode: 'opaque' });
+        const module = device.createShaderModule({
+          code: `
+            @vertex fn vs(@builtin(vertex_index) i: u32) -> @builtin(position) vec4f {
+              var v = array<vec2f, 3>(vec2f(-1.0, -3.0), vec2f(3.0, 1.0), vec2f(-1.0, 1.0));
+              return vec4f(v[i], 0.0, 1.0);
+            }
+            @fragment fn fs(@builtin(position) p: vec4f) -> @location(0) vec4f {
+              return vec4f(fract(p.x / 40.0), fract(p.y / 40.0), 1.0, 1.0);
+            }
+          `,
+        });
+        const pipeline = device.createRenderPipeline({
+          layout: 'auto',
+          vertex: { module, entryPoint: 'vs' },
+          fragment: { module, entryPoint: 'fs', targets: [{ format }] },
+        });
+        let frames = 0;
+        let completed = 0;
+        const frame = () => {
+          const enc = device.createCommandEncoder();
+          const pass = enc.beginRenderPass({
+            colorAttachments: [{
+              view: ctx.getCurrentTexture().createView(),
+              loadOp: 'clear',
+              clearValue: { r: 1, g: 0, b: 0, a: 1 },
+              storeOp: 'store',
+            }],
+          });
+          pass.setPipeline(pipeline);
+          pass.draw(3);
+          pass.end();
+          device.queue.submit([enc.finish()]);
+          device.queue.onSubmittedWorkDone().then(
+            () => { completed++; },
+            (e) => log('workDone REJECTED: ' + e.message),
+          );
+          frames++;
+          if (frames <= 300) requestAnimationFrame(frame);
+          else log(`done: submitted=${frames} completed=${completed}`);
+        };
+        requestAnimationFrame(frame);
+        setInterval(() => log(`submitted=${frames} completed=${completed}`), 5000);
+        log('pipeline created, rendering blue/teal grid over red clear…');
+      } catch (err) {
+        log('FAILED: ' + err.message);
+      }
+    </script>
+  </body>
+</html>

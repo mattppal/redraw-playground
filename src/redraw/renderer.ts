@@ -13,6 +13,14 @@ import type { PathSample } from './svg';
 const LOOP_SECONDS = 6;
 const MAX_DPR = 2;
 
+/**
+ * With ?debug in the URL the backing store is capped to a tiny pixel
+ * count so software WebGPU implementations (SwiftShader) can keep up,
+ * and frame/submit counters are exposed on window.__redrawDebug.
+ */
+const DEBUG = typeof window !== 'undefined' && new URLSearchParams(window.location.search).has('debug');
+const DEBUG_PIXEL_CAP = 34_000;
+
 function hexToVec4(hex: string): d.v4f {
   let h = hex.replace('#', '');
   if (h.length === 3) h = h.split('').map((c) => c + c).join('');
@@ -66,6 +74,23 @@ export class RedrawRenderer {
     this.rafId = requestAnimationFrame(this.frame);
   }
 
+  /**
+   * One renderer per canvas. Repeated calls (e.g. React StrictMode
+   * double-mounting) return the same instance instead of racing two
+   * device initializations against one canvas context.
+   */
+  static getOrCreate(canvas: HTMLCanvasElement): Promise<RedrawRenderer> {
+    let promise = RedrawRenderer.cache.get(canvas);
+    if (!promise) {
+      promise = RedrawRenderer.create(canvas);
+      RedrawRenderer.cache.set(canvas, promise);
+      promise.catch(() => RedrawRenderer.cache.delete(canvas));
+    }
+    return promise;
+  }
+
+  private static cache = new WeakMap<HTMLCanvasElement, Promise<RedrawRenderer>>();
+
   static async create(canvas: HTMLCanvasElement): Promise<RedrawRenderer> {
     if (!navigator.gpu) {
       throw new Error(
@@ -80,6 +105,9 @@ export class RedrawRenderer {
         `WebGPU is present but no GPU device could be acquired. ${err instanceof Error ? err.message : ''}`,
       );
     }
+    root.device.addEventListener('uncapturederror', (event) => {
+      console.error('[redraw] uncaptured WebGPU error:', event.error.message);
+    });
     const context = canvas.getContext('webgpu');
     if (!context) {
       root.destroy();
@@ -129,8 +157,13 @@ export class RedrawRenderer {
 
   private handleResize(): void {
     const dpr = Math.min(window.devicePixelRatio || 1, MAX_DPR);
-    const w = Math.max(1, Math.round(this.canvas.clientWidth * dpr));
-    const h = Math.max(1, Math.round(this.canvas.clientHeight * dpr));
+    let w = Math.max(1, Math.round(this.canvas.clientWidth * dpr));
+    let h = Math.max(1, Math.round(this.canvas.clientHeight * dpr));
+    if (DEBUG && w * h > DEBUG_PIXEL_CAP) {
+      const shrink = Math.sqrt(DEBUG_PIXEL_CAP / (w * h));
+      w = Math.max(1, Math.floor(w * shrink));
+      h = Math.max(1, Math.floor(h * shrink));
+    }
     if (w !== this.canvas.width || h !== this.canvas.height) {
       this.canvas.width = w;
       this.canvas.height = h;
@@ -186,6 +219,22 @@ export class RedrawRenderer {
 
     if (!this.pipeline || !this.bindGroup || !this.sample) return;
 
+    try {
+      this.renderFrame();
+      this.consecutiveErrors = 0;
+    } catch (err) {
+      if (++this.consecutiveErrors >= 10) {
+        console.error('[redraw] stopping render loop after repeated errors:', err);
+        cancelAnimationFrame(this.rafId);
+      }
+    }
+  };
+
+  private consecutiveErrors = 0;
+
+  private renderFrame(): void {
+    if (!this.pipeline || !this.bindGroup || !this.sample) return;
+
     const palette: d.v4f[] = [];
     for (let i = 0; i < MAX_PALETTE; i++) {
       palette.push(this.palette[i] ?? d.vec4f(1, 1, 1, 1));
@@ -218,5 +267,36 @@ export class RedrawRenderer {
     pass.draw(3);
     pass.end();
     device.queue.submit([encoder.finish()]);
-  };
+
+    if (DEBUG) {
+      this.framesSubmitted++;
+      const dbg = (window as unknown as { __redrawDebug?: Record<string, unknown> });
+      dbg.__redrawDebug = {
+        framesSubmitted: this.framesSubmitted,
+        framesCompleted: this.framesCompleted,
+        canvasSize: `${this.canvas.width}x${this.canvas.height}`,
+        pointCount: this.sample?.count ?? 0,
+        pipeline: !!this.pipeline,
+      };
+      if (this.framesSubmitted <= 3) {
+        console.log('[redraw debug] submitted frame', this.framesSubmitted, dbg.__redrawDebug);
+      }
+      device.queue.onSubmittedWorkDone().then(
+        () => {
+          this.framesCompleted++;
+          if (this.framesCompleted <= 3) {
+            console.log('[redraw debug] completed frame', this.framesCompleted);
+          }
+        },
+        (err: unknown) => {
+          if (this.framesSubmitted <= 3) {
+            console.error('[redraw debug] frame rejected:', err);
+          }
+        },
+      );
+    }
+  }
+
+  private framesSubmitted = 0;
+  private framesCompleted = 0;
 }

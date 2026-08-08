@@ -41,20 +41,17 @@ export default function App() {
   const [strokeScale, setStrokeScale] = useState(initial.scale);
   const [recording, setRecording] = useState(false);
 
-  // Create the renderer once the canvas exists.
+  // Create the renderer once the canvas exists. getOrCreate caches per
+  // canvas, so StrictMode's double mount reuses the same renderer
+  // instead of racing two GPU device initializations.
   useEffect(() => {
     const canvas = canvasRef.current;
     if (!canvas) return;
     let cancelled = false;
-    let renderer: RedrawRenderer | null = null;
 
-    RedrawRenderer.create(canvas)
+    RedrawRenderer.getOrCreate(canvas)
       .then((r) => {
-        if (cancelled) {
-          r.dispose();
-          return;
-        }
-        renderer = r;
+        if (cancelled) return;
         rendererRef.current = r;
         setStatus('ready');
       })
@@ -66,7 +63,6 @@ export default function App() {
 
     return () => {
       cancelled = true;
-      renderer?.dispose();
       rendererRef.current = null;
     };
   }, []);
