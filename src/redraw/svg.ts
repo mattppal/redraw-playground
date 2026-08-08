@@ -13,6 +13,9 @@ export interface PathSample {
 
 const GEOMETRY_SELECTOR = 'path, circle, ellipse, rect, line, polyline, polygon';
 
+/** Hard ceiling: the fragment shader walks every segment per pixel. */
+const MAX_POINTS = 2048;
+
 /** Wraps bare path data ("M 10 10 C ...") into a minimal SVG document. */
 function normalizeSvgText(input: string): string {
   const text = input.trim();
@@ -66,7 +69,14 @@ export function sampleSvg(svgText: string, targetCount = 512): PathSample {
       throw new Error('No drawable geometry found (paths, circles, rects, …).');
     }
 
-    const totalLength = measured.reduce((sum, m) => sum + m.length, 0);
+    // Guard against pathological documents: every element costs at least
+    // 2 samples and the fragment shader walks every segment per pixel.
+    const capped = measured.slice(0, Math.floor(MAX_POINTS / 2));
+    const totalLength = capped.reduce((sum, m) => sum + m.length, 0);
+    const budget = Math.min(
+      Math.max(targetCount, capped.length * 2),
+      MAX_POINTS,
+    );
     const xs: number[] = [];
     let accLength = 0;
     let subpathId = 0;
@@ -75,31 +85,35 @@ export function sampleSvg(svgText: string, targetCount = 512): PathSample {
     let maxX = -Infinity;
     let maxY = -Infinity;
 
-    for (const { el, length } of measured) {
-      const n = Math.max(2, Math.round((targetCount * length) / totalLength));
+    for (const { el, length } of capped) {
+      const n = Math.max(2, Math.round((budget * length) / totalLength));
       const step = length / (n - 1);
       const matrix = el.getCTM();
-      let prevX = 0;
-      let prevY = 0;
+      let prevRawX = 0;
+      let prevRawY = 0;
 
       for (let i = 0; i < n; i++) {
         const raw = el.getPointAtLength(i * step);
+        // A jump much larger than the sampling step means we crossed into
+        // a new subpath (a path with multiple M commands). Compare in raw
+        // path units, BEFORE the CTM: the matrix can scale coordinates
+        // arbitrarily (e.g. viewBox-only documents), which would make
+        // every pair of points look like a jump.
+        if (i > 0) {
+          const jump = Math.hypot(raw.x - prevRawX, raw.y - prevRawY);
+          if (jump > step * 3 + 1e-9) subpathId++;
+        }
+        prevRawX = raw.x;
+        prevRawY = raw.y;
+
         let x = raw.x;
         let y = raw.y;
         if (matrix) {
           x = matrix.a * raw.x + matrix.c * raw.y + matrix.e;
           y = matrix.b * raw.x + matrix.d * raw.y + matrix.f;
         }
-        // A jump much larger than the sampling step means we crossed into
-        // a new subpath (a path with multiple M commands).
-        if (i > 0) {
-          const jump = Math.hypot(x - prevX, y - prevY);
-          if (jump > Math.max(step * 4, 2)) subpathId++;
-        }
         const t = (accLength + i * step) / totalLength;
         xs.push(x, y, t, subpathId);
-        prevX = x;
-        prevY = y;
         if (x < minX) minX = x;
         if (y < minY) minY = y;
         if (x > maxX) maxX = x;
