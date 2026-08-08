@@ -1,0 +1,7 @@
+# Compile "use gpu" functions when running scripts (e.g. `bun run smoke`)
+# the same way unplugin-typegpu/vite does for the app.
+preload = ["./scripts/typegpu-preload.ts"]
+
+[install]
+# Only install package versions that have been public for at least 3 days.
+minimumReleaseAge = 259200
