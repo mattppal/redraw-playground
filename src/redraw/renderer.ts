@@ -6,7 +6,7 @@ import tgpu, {
   type UniformFlag,
 } from 'typegpu';
 import * as d from 'typegpu/data';
-import { MAX_PALETTE, Uniforms, layout } from './context';
+import { MAX_PALETTE, PathPoint, Uniforms, layout } from './context';
 import { buildShaderCode, type EffectFns } from './shader';
 import type { PathSample } from './svg';
 
@@ -20,6 +20,38 @@ const MAX_DPR = 2;
  */
 const DEBUG = typeof window !== 'undefined' && new URLSearchParams(window.location.search).has('debug');
 const DEBUG_PIXEL_CAP = 34_000;
+
+/**
+ * Fills slot 3 of each 6-float point with signed curvature (rad/px in
+ * canvas space), estimated from the turning angle between neighboring
+ * segments and smoothed to tame arc-sampling noise.
+ */
+function computeCurvature(fitted: Float32Array, count: number): void {
+  const curv = new Float32Array(count);
+  for (let i = 1; i + 1 < count; i++) {
+    const seg = fitted[i * 6 + 4];
+    if (fitted[(i - 1) * 6 + 4] !== seg || fitted[(i + 1) * 6 + 4] !== seg) continue;
+    const ax = fitted[i * 6] - fitted[(i - 1) * 6];
+    const ay = fitted[i * 6 + 1] - fitted[(i - 1) * 6 + 1];
+    const bx = fitted[(i + 1) * 6] - fitted[i * 6];
+    const by = fitted[(i + 1) * 6 + 1] - fitted[i * 6 + 1];
+    const la = Math.hypot(ax, ay);
+    const lb = Math.hypot(bx, by);
+    if (la < 1e-6 || lb < 1e-6) continue;
+    const angle = Math.atan2(ax * by - ay * bx, ax * bx + ay * by);
+    curv[i] = angle / ((la + lb) * 0.5);
+  }
+  // Two light smoothing passes within each subpath.
+  for (let pass = 0; pass < 2; pass++) {
+    const prev = curv.slice();
+    for (let i = 1; i + 1 < count; i++) {
+      const seg = fitted[i * 6 + 4];
+      if (fitted[(i - 1) * 6 + 4] !== seg || fitted[(i + 1) * 6 + 4] !== seg) continue;
+      curv[i] = prev[i - 1] * 0.25 + prev[i] * 0.5 + prev[i + 1] * 0.25;
+    }
+  }
+  for (let i = 0; i < count; i++) fitted[i * 6 + 3] = curv[i];
+}
 
 function hexToVec4(hex: string): d.v4f {
   let h = hex.replace('#', '');
@@ -45,7 +77,7 @@ export class RedrawRenderer {
   private pipelineLayout: GPUPipelineLayout;
   private pipeline: GPURenderPipeline | null = null;
   private uniBuffer: TgpuBuffer<typeof Uniforms> & UniformFlag;
-  private pointsBuffer: (TgpuBuffer<d.WgslArray<d.Vec4f>> & StorageFlag) | null = null;
+  private pointsBuffer: (TgpuBuffer<d.WgslArray<typeof PathPoint>> & StorageFlag) | null = null;
   private bindGroup: TgpuBindGroup | null = null;
   private sample: PathSample | null = null;
   private palette: d.v4f[] = [];
@@ -121,11 +153,16 @@ export class RedrawRenderer {
     const code = buildShaderCode(fns);
     const device = this.root.device;
     const module = device.createShaderModule({ code });
-    module.getCompilationInfo().then((info) => {
-      for (const msg of info.messages) {
-        if (msg.type === 'error') console.error('[redraw shader]', msg.message);
-      }
-    });
+    module.getCompilationInfo().then(
+      (info) => {
+        for (const msg of info.messages) {
+          if (msg.type === 'error') console.error('[redraw shader]', msg.message);
+        }
+      },
+      () => {
+        // Diagnostics-only; some implementations reject this promise.
+      },
+    );
     this.pipeline = device.createRenderPipeline({
       layout: this.pipelineLayout,
       vertex: { module, entryPoint: 'vs_main' },
@@ -185,21 +222,24 @@ export class RedrawRenderer {
     const offsetX = (w - bw * scale) / 2 - minX * scale;
     const offsetY = (h - bh * scale) / 2 - minY * scale;
 
-    const fitted = new Float32Array(sample.points.length);
-    for (let i = 0; i < sample.count; i++) {
-      fitted[i * 4] = sample.points[i * 4] * scale + offsetX;
-      fitted[i * 4 + 1] = sample.points[i * 4 + 1] * scale + offsetY;
-      fitted[i * 4 + 2] = sample.points[i * 4 + 2];
-      fitted[i * 4 + 3] = sample.points[i * 4 + 3];
+    // PathPoint layout: (pos.x, pos.y, t, curvature, seg, pad) — 24-byte stride.
+    const count = sample.count;
+    const fitted = new Float32Array(count * 6);
+    for (let i = 0; i < count; i++) {
+      fitted[i * 6] = sample.points[i * 4] * scale + offsetX;
+      fitted[i * 6 + 1] = sample.points[i * 4 + 1] * scale + offsetY;
+      fitted[i * 6 + 2] = sample.points[i * 4 + 2];
+      fitted[i * 6 + 4] = sample.points[i * 4 + 3];
     }
+    computeCurvature(fitted, count);
 
     const device = this.root.device;
-    const neededCount = sample.count;
-    const currentCount = this.pointsBuffer ? this.root.unwrap(this.pointsBuffer).size / 16 : 0;
+    const neededCount = count;
+    const currentCount = this.pointsBuffer ? this.root.unwrap(this.pointsBuffer).size / 24 : 0;
     if (!this.pointsBuffer || currentCount !== neededCount) {
       this.pointsBuffer?.destroy();
       this.pointsBuffer = this.root
-        .createBuffer(d.arrayOf(d.vec4f, neededCount))
+        .createBuffer(d.arrayOf(PathPoint, neededCount))
         .$usage('storage');
       this.bindGroup = this.root.createBindGroup(layout, {
         uni: this.uniBuffer,

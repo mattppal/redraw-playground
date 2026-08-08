@@ -32,37 +32,44 @@ fn shade(p: vec2f) -> vec4f {
   let n = uni.pointCount;
 
   var minDist = 1e9;
+  var side = 1.0;
   var bestT = 0.0;
+  var bestCurv = 0.0;
   var bestTan = vec2f(1.0, 0.0);
 
   for (var i = 0u; i + 1u < n; i = i + 1u) {
     let a = points[i];
     let b = points[i + 1u];
     // Points on different subpaths do not form a segment.
-    if (a.w != b.w) {
+    if (a.seg != b.seg) {
       continue;
     }
-    let pa = p - a.xy;
-    let ba = b.xy - a.xy;
+    let pa = p - a.pos;
+    let ba = b.pos - a.pos;
     let len2 = max(dot(ba, ba), 1e-6);
     let h = clamp(dot(pa, ba) / len2, 0.0, 1.0);
     let dist = length(pa - ba * h);
     if (dist < minDist) {
       minDist = dist;
-      bestT = mix(a.z, b.z, h);
+      side = select(-1.0, 1.0, ba.x * pa.y - ba.y * pa.x >= 0.0);
+      bestT = mix(a.t, b.t, h);
+      bestCurv = mix(a.curvature, b.curvature, h);
       bestTan = ba * inverseSqrt(len2);
     }
   }
 
   var ctx: PathContext;
   ctx.t = bestT;
-  ctx.distance = minDist;
+  ctx.distance = minDist * side;
   ctx.time = uni.time;
   ctx.progress = uni.progress;
+  ctx.width = 0.0;
+  ctx.curvature = bestCurv;
   ctx.position = p;
   ctx.tangent = bestTan;
 
   let widthPx = max(strokeWidthFn(ctx) * uni.strokeScale, 0.0);
+  ctx.width = widthPx;
   let featherPx = max(featherFn(ctx) * uni.strokeScale, 0.0);
   let rgb = colorFn(ctx);
 

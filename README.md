@@ -40,7 +40,7 @@ Upstream links:
 What *is* real here:
 
 - Effects are genuine TypeScript functions with the `"use gpu"` directive, compiled to WGSL at bundle time by `unplugin-typegpu` — the exact authoring model and toolchain Redraw is built on. See [`src/redraw/presets/`](./src/redraw/presets/).
-- Each function receives a `PathContext` mirroring Redraw's callback contract: `t` (0 → 1 along the path by arc length), `distance` to the path, `tangent`, and animation values (`time`, `progress`).
+- Each function receives a `PathContext` mirroring Redraw's callback contract: `t` (0 → 1 along the path by arc length), signed `distance` to the path, `tangent`, signed `curvature` (enabling the article's "thicker where the path bends"), the evaluated stroke `width` (for cross-stroke shading in the color/feather callbacks), and animation values (`time`, `progress`).
 - The three programmable callbacks match Redraw's rules of the game: **stroke width**, **color**, and **feather**.
 
 Known divergences (documented honestly):
@@ -82,7 +82,8 @@ SVG text ──(browser getPointAtLength)──► arc-length samples (x, y, t, 
 presets/*.ts  ──("use gpu" via unplugin-typegpu)──► WGSL functions
                                               │ tgpu.resolve
 WGSL harness (fullscreen triangle) ───────────┴──► render pipeline
-  per pixel: closest segment → PathContext {t, distance, tangent, time, progress}
+  per pixel: closest segment → PathContext {t, distance, tangent,
+             curvature, width, time, progress}
              → strokeWidth(ctx), color(ctx), feather(ctx) → composite
 ```
 
@@ -96,7 +97,20 @@ WGSL harness (fullscreen triangle) ───────────┴──►
 
 - **Left** — paste an SVG (or bare `d` path data), upload a file, or pick a sample (Squiggle, Heart, Star, Spiral)
 - **Center** — the live WebGPU canvas, plus a 4-second WebM recorder
-- **Right** — three presets (Rainbow pulse, Liquid feather, Electric dash), speed / stroke scale sliders, four palettes, and a code panel with the preset's actual TypeScript source and a copyable iframe embed snippet (URL params restore preset, palette, speed, and scale)
+- **Right** — eight presets, speed / stroke scale sliders, four palettes, and a code panel with the preset's actual TypeScript source and a copyable iframe embed snippet (URL params restore preset, palette, speed, and scale)
+
+### Presets
+
+| Preset | Idea it demonstrates |
+| --- | --- |
+| Rainbow pulse | Variable stroke width — a wave of thickness and color travels along the path |
+| Liquid feather | Vector feathering — the edge itself pulses and dissolves |
+| Liquid metal | Cross-stroke shading — signed `ctx.distance` / `ctx.width` turn the stroke into a lit tube |
+| Neon tube | White-hot filament + breathing halo, all feather-driven |
+| Draw on | The path draws itself in — width is zero ahead of the traveling pen tip |
+| Taper brush | Calligraphic taper with a living wobble |
+| Ink bend | Curvature-driven width — thicker where the path bends (`ctx.curvature`) |
+| Electric dash | Width collapses to zero between dashes racing along the path |
 
 ## Stack
 

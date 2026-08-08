@@ -4,12 +4,26 @@
  * Run with: bun run smoke
  */
 import { WgslReflect } from 'wgsl_reflect/wgsl_reflect.module.js';
+import * as drawOn from '../src/redraw/presets/drawOn';
 import * as electricDash from '../src/redraw/presets/electricDash';
+import * as inkBend from '../src/redraw/presets/inkBend';
 import * as liquidFeather from '../src/redraw/presets/liquidFeather';
+import * as liquidMetal from '../src/redraw/presets/liquidMetal';
+import * as neonTube from '../src/redraw/presets/neonTube';
 import * as rainbowPulse from '../src/redraw/presets/rainbowPulse';
+import * as taperBrush from '../src/redraw/presets/taperBrush';
 import { buildShaderCode } from '../src/redraw/shader';
 
-const presets = { rainbowPulse, liquidFeather, electricDash };
+const presets = {
+  rainbowPulse,
+  liquidFeather,
+  liquidMetal,
+  neonTube,
+  drawOn,
+  taperBrush,
+  inkBend,
+  electricDash,
+};
 
 let failed = false;
 for (const [name, fns] of Object.entries(presets)) {
@@ -81,8 +95,13 @@ fn test_main(@builtin(global_invocation_id) gid: vec3u) {
   uniF.set([1, 0, 0, 1], 8); // palette[0] = red
   uniF.set([0, 0, 1, 1], 12); // palette[1] = blue
 
-  // A horizontal line y=50 from x=20 to x=180 (x, y, t, subpath).
-  const points = new Float32Array([20, 50, 0, 0, 100, 50, 0.5, 0, 180, 50, 1, 0]);
+  // A horizontal line y=50 from x=20 to x=180.
+  // PathPoint layout: (pos.x, pos.y, t, curvature, seg, pad).
+  const points = new Float32Array([
+    20, 50, 0.0, 0, 0, 0,
+    100, 50, 0.5, 0, 0, 0,
+    180, 50, 1.0, 0, 0, 0,
+  ]);
   // Pixel 0 sits exactly on the line's midpoint; pixel 1 is far away.
   const testPixels = new Float32Array([100, 50, 10, 95]);
   const testOut = new Float32Array(8);
